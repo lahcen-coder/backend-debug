@@ -80,7 +80,7 @@ RUN mkdir -p storage/app/public \
 
 EXPOSE 80
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -sf http://localhost/up || exit 1
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -sf http://localhost/healthz || exit 1
 
 CMD ["/usr/local/bin/start.sh"]
