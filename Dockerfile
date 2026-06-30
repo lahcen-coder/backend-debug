@@ -18,17 +18,21 @@ FROM php:8.3-fpm-alpine AS production
 LABEL maintainer="Debug Together <team@debugtogether.app>"
 LABEL org.opencontainers.image.description="Debug Together — Laravel 11 API"
 
-# System dependencies
+# System dependencies + build tools for PECL
 RUN apk add --no-cache \
     nginx \
     supervisor \
     curl \
     libzip-dev \
-    libpng-dev \
     oniguruma-dev \
     libxml2-dev \
     icu-dev \
-    shadow
+    icu-libs \
+    shadow \
+    autoconf \
+    g++ \
+    make \
+    linux-headers
 
 # PHP extensions
 RUN docker-php-ext-configure intl \
@@ -41,7 +45,8 @@ RUN docker-php-ext-configure intl \
         opcache \
         intl \
     && pecl install redis \
-    && docker-php-ext-enable redis
+    && docker-php-ext-enable redis \
+    && apk del autoconf g++ make linux-headers
 
 # Copy runtime configuration
 COPY docker/php.ini        /usr/local/etc/php/conf.d/app.ini
