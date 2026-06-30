@@ -47,7 +47,7 @@ Route::prefix('v1')->group(function () {
         ->middleware('throttle:60,1');
 
     // ── Authenticated ─────────────────────────────────────────────────────────
-    Route::middleware(['auth:sanctum', 'verified'])->group(function () {
+    Route::middleware(['auth:sanctum'])->group(function () {
 
         // Auth
         Route::prefix('auth')->group(function () {

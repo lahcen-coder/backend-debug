@@ -36,7 +36,12 @@ class AuthController extends Controller
             'consented_at'     => now(),
         ]);
 
-        event(new Registered($user));
+        try {
+            event(new Registered($user));
+        } catch (\Throwable $e) {
+            // Email sending is non-blocking — account is still created.
+            \Illuminate\Support\Facades\Log::warning('Registration email failed: ' . $e->getMessage());
+        }
 
         $tokenName = $request->input('device_name', 'api-token');
         $token     = $user->createToken($tokenName)->plainTextToken;

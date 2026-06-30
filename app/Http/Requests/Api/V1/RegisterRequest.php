@@ -19,7 +19,7 @@ class RegisterRequest extends FormRequest
         return [
             // Identity
             'name'             => ['required', 'string', 'max:100'],
-            'email'            => ['required', 'email:rfc,dns', 'max:255', 'unique:users,email'],
+            'email'            => ['required', 'email:rfc', 'max:255', 'unique:users,email'],
 
             // Password: min 8 chars, mixed case, at least one number.
             // "confirmed" expects a matching "password_confirmation" field.
