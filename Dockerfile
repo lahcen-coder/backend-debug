@@ -60,13 +60,19 @@ COPY --from=vendor /app/vendor ./vendor
 COPY --chown=www-data:www-data . .
 
 # Bootstrap application (runs safely even without APP_KEY at build time)
-RUN php artisan package:discover --ansi 2>/dev/null || true \
+RUN mkdir -p storage/app/public \
+        storage/framework/cache/data \
+        storage/framework/sessions \
+        storage/framework/views \
+        storage/logs \
+        bootstrap/cache \
+    && php artisan package:discover --ansi 2>/dev/null || true \
     && chmod -R 775 storage bootstrap/cache \
     && chown -R www-data:www-data storage bootstrap/cache
 
 EXPOSE 80
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
-    CMD curl -sf http://localhost/api/ping || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
+    CMD curl -sf http://localhost/api/v1/ping || exit 1
 
 CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
