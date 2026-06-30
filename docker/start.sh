@@ -43,5 +43,10 @@ php artisan config:cache
 php artisan route:cache
 php artisan view:cache || echo "    (view:cache skipped — no Blade views)"
 
-echo "==> Starting supervisord..."
+echo "==> Diagnosing horizon (informational only, will not block startup)..."
+timeout 5 php artisan horizon:status 2>&1 || \
+    timeout 5 php artisan about 2>&1 | grep -i "horizon\|queue\|redis" || true
+
+echo "==> Starting supervisord (php-fpm + nginx only)..."
+echo "    NOTE: Run horizon as a separate EasyPanel service."
 exec /usr/bin/supervisord -n -c /etc/supervisor/conf.d/supervisord.conf
