@@ -23,6 +23,21 @@ Route::prefix('v1')->group(function () {
     // ── Health Check (unauthenticated) ───────────────────────────────────────
     Route::get('ping', fn () => response()->json(['success' => true, 'data' => ['status' => 'ok']]));
 
+    // ── Debug: config check (remove in production) ────────────────────────────
+    Route::get('debug-config', function () {
+        return response()->json([
+            'app_env'        => config('app.env'),
+            'app_url'        => config('app.url'),
+            'frontend_url'   => config('app.frontend_url', env('FRONTEND_URL')),
+            'cors_origins'   => config('cors.allowed_origins'),
+            'db_host'        => config('database.connections.mysql.host'),
+            'db_name'        => config('database.connections.mysql.database'),
+            'redis_host'     => config('database.redis.default.host'),
+            'mail_mailer'    => config('mail.default'),
+            'queue_driver'   => config('queue.default'),
+        ]);
+    });
+
     // ── Public: Authentication ────────────────────────────────────────────────
     Route::prefix('auth')->group(function () {
         Route::post('register', [AuthController::class, 'register'])
