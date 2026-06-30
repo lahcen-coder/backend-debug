@@ -6,11 +6,11 @@ WORKDIR /app
 COPY composer.json composer.lock* ./
 RUN composer install \
     --no-interaction \
-    --no-plugins \
     --no-scripts \
     --no-dev \
     --prefer-dist \
-    --optimize-autoloader
+    --optimize-autoloader \
+    --ignore-platform-reqs
 
 # ── Stage 2: Production Runtime ───────────────────────────────────────────────
 FROM php:8.3-fpm-alpine AS production
