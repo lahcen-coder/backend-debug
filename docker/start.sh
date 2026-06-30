@@ -10,15 +10,27 @@ if [ -z "$APP_KEY" ]; then
 fi
 
 echo "==> Waiting for database ($DB_HOST:${DB_PORT:-3306})..."
+DB_TRIES=0
 until nc -z "$DB_HOST" "${DB_PORT:-3306}" 2>/dev/null; do
-    echo "    Database not ready, retrying in 3s..."
+    DB_TRIES=$((DB_TRIES + 1))
+    if [ "$DB_TRIES" -ge 30 ]; then
+        echo "ERROR: Database not reachable after 90s. Check DB_HOST=$DB_HOST"
+        exit 1
+    fi
+    echo "    Database not ready, retrying in 3s... ($DB_TRIES/30)"
     sleep 3
 done
 echo "    Database ready."
 
 echo "==> Waiting for Redis ($REDIS_HOST:${REDIS_PORT:-6379})..."
+REDIS_TRIES=0
 until nc -z "$REDIS_HOST" "${REDIS_PORT:-6379}" 2>/dev/null; do
-    echo "    Redis not ready, retrying in 3s..."
+    REDIS_TRIES=$((REDIS_TRIES + 1))
+    if [ "$REDIS_TRIES" -ge 20 ]; then
+        echo "ERROR: Redis not reachable after 60s. Check REDIS_HOST=$REDIS_HOST"
+        exit 1
+    fi
+    echo "    Redis not ready, retrying in 3s... ($REDIS_TRIES/20)"
     sleep 3
 done
 echo "    Redis ready."
