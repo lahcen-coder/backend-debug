@@ -23,6 +23,7 @@ RUN apk add --no-cache \
     nginx \
     supervisor \
     curl \
+    netcat-openbsd \
     libzip-dev \
     oniguruma-dev \
     libxml2-dev \
@@ -49,9 +50,11 @@ RUN docker-php-ext-configure intl \
     && apk del autoconf g++ make linux-headers
 
 # Copy runtime configuration
-COPY docker/php.ini        /usr/local/etc/php/conf.d/app.ini
-COPY docker/nginx.conf     /etc/nginx/http.d/default.conf
+COPY docker/php.ini          /usr/local/etc/php/conf.d/app.ini
+COPY docker/nginx.conf       /etc/nginx/http.d/default.conf
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY docker/start.sh         /usr/local/bin/start.sh
+RUN chmod +x /usr/local/bin/start.sh
 
 # Supervisor log dir
 RUN mkdir -p /var/log/supervisor
@@ -80,4 +83,4 @@ EXPOSE 80
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
     CMD curl -sf http://localhost/api/v1/ping || exit 1
 
-CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+CMD ["/usr/local/bin/start.sh"]
