@@ -41,7 +41,7 @@ php artisan migrate --force --no-interaction
 echo "==> Caching config, routes and views..."
 php artisan config:cache
 php artisan route:cache
-php artisan view:cache
+php artisan view:cache || echo "    (view:cache skipped — no Blade views)"
 
 echo "==> Starting supervisord..."
 exec /usr/bin/supervisord -n -c /etc/supervisor/conf.d/supervisord.conf
