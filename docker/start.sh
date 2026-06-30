@@ -40,8 +40,8 @@ php artisan migrate --force --no-interaction
 
 echo "==> Caching config, routes and views..."
 php artisan config:cache
-php artisan route:cache
-php artisan view:cache || echo "    (view:cache skipped — no Blade views)"
+php artisan route:cache  || echo "    (route:cache skipped — closure routes detected)"
+php artisan view:cache   || echo "    (view:cache skipped — no Blade views)"
 
 echo "==> Diagnosing horizon (informational only, will not block startup)..."
 timeout 5 php artisan horizon:status 2>&1 || \
