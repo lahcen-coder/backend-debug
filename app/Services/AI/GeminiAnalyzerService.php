@@ -348,6 +348,10 @@ class GeminiAnalyzerService implements ConversationAnalyzer
                 $report['activity_suggestions'] ?? []
             ),
 
+            'connection_questions' => $this->normalizeConnectionQuestions(
+                $report['connection_questions'] ?? []
+            ),
+
             'safety_flag'  => (bool)   ($report['safety_flag']  ?? false),
             'generated_at' => (string) ($report['generated_at'] ?? now()->toIso8601String()),
         ];
@@ -401,6 +405,23 @@ class GeminiAnalyzerService implements ConversationAnalyzer
             $raw,
             fn ($item) => is_array($item) && isset($item['activity'])
         ));
+    }
+
+    private function normalizeConnectionQuestions(mixed $raw): array
+    {
+        if (! is_array($raw)) return [];
+
+        return array_slice(
+            array_values(array_filter(
+                $raw,
+                fn ($item) => is_array($item)
+                    && isset($item['question'])
+                    && is_string($item['question'])
+                    && strlen(trim($item['question'])) > 0
+            )),
+            0,
+            6
+        );
     }
 
     // ── Cost Estimation ───────────────────────────────────────────────────────
@@ -559,6 +580,14 @@ using EXACTLY this schema — no additional keys, no omitted keys:
       "vibe": "<cosy|adventurous|creative|relaxing|social>"
     }
     ... (3–5 suggestions, all grounded in the actual chat content)
+  ],
+
+  "connection_questions": [
+    {
+      "question": "<a warm, deep, open-ended question the two people can ask each other to grow closer — inspired by a real topic, memory, or unspoken theme from their chat. Make it heartfelt and specific to THEM, not generic>",
+      "why": "<one short sentence on how this question helps them understand each other more deeply>"
+    }
+    ... (exactly 5 questions, ranging from playful to emotionally deep, all grounded in their actual conversation)
   ]
 }
 
@@ -609,7 +638,8 @@ Synthesise them into a FINAL complete report using EXACTLY the same full JSON sc
   "communication_style": { "person_a": {...}, "person_b": {...} },
   "misunderstanding_resolver": { "conflicts_detected": ..., "resolutions": [...] },
   "memory_box": [...],
-  "activity_suggestions": [...]
+  "activity_suggestions": [...],
+  "connection_questions": [ { "question": "<a heartfelt, deep, open-ended question grounded in their real topics/memories that helps them grow closer>", "why": "<one short sentence on how it deepens their bond>" } ]
 }
 
 Use the chunk data as evidence. Do not repeat information — synthesise it.

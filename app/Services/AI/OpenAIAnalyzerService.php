@@ -216,6 +216,8 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
 
             'activity_suggestions' => $this->normalizeActivitySuggestions($report['activity_suggestions'] ?? []),
 
+            'connection_questions' => $this->normalizeConnectionQuestions($report['connection_questions'] ?? []),
+
             'safety_flag'  => (bool)   ($report['safety_flag']  ?? false),
             'generated_at' => (string) ($report['generated_at'] ?? now()->toIso8601String()),
         ];
@@ -262,6 +264,23 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
         if (! is_array($raw)) return [];
 
         return array_values(array_filter($raw, fn ($item) => is_array($item) && isset($item['activity'])));
+    }
+
+    private function normalizeConnectionQuestions(mixed $raw): array
+    {
+        if (! is_array($raw)) return [];
+
+        return array_slice(
+            array_values(array_filter(
+                $raw,
+                fn ($item) => is_array($item)
+                    && isset($item['question'])
+                    && is_string($item['question'])
+                    && strlen(trim($item['question'])) > 0
+            )),
+            0,
+            6
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -412,6 +431,14 @@ using EXACTLY this schema — no additional keys, no omitted keys:
       "vibe": "<cosy|adventurous|creative|relaxing|social>"
     }
     ... (3-5 suggestions, all grounded in the actual chat content)
+  ],
+
+  "connection_questions": [
+    {
+      "question": "<a warm, deep, open-ended question the two people can ask each other to grow closer — inspired by a real topic, memory, or unspoken theme from their chat. Make it heartfelt and specific to THEM, not generic>",
+      "why": "<one short sentence on how this question helps them understand each other more deeply>"
+    }
+    ... (exactly 5 questions, ranging from playful to emotionally deep, all grounded in their actual conversation)
   ]
 }
 
@@ -499,7 +526,8 @@ fully populate person_a and person_b with their real names — never leave them 
   },
   "misunderstanding_resolver": { "conflicts_detected": <int>, "resolutions": [ { "original_tension": "...", "likely_need_a": "...", "likely_need_b": "...", "reframe": "..." } ] },
   "memory_box": [ { "type": "<funny|sweet|milestone>", "moment": "<1-2 sentences>", "quote": "<closest quote>" } ],
-  "activity_suggestions": [ { "activity": "...", "reason": "...", "vibe": "<cosy|adventurous|creative|relaxing|social>" } ]
+  "activity_suggestions": [ { "activity": "...", "reason": "...", "vibe": "<cosy|adventurous|creative|relaxing|social>" } ],
+  "connection_questions": [ { "question": "<a heartfelt, deep, open-ended question grounded in their real topics/memories that helps them grow closer>", "why": "<one short sentence on how it deepens their bond>" } ]
 }
 
 Use the chunk data as evidence. Do not repeat information — synthesise it into deep, specific insights.
