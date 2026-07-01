@@ -21,10 +21,10 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
     private const API_URL = 'https://api.openai.com/v1/chat/completions';
 
     /** Send the whole corpus in one request up to this size; chunk beyond it. */
-    private const MAX_MESSAGES_DIRECT = 500;
+    private const MAX_MESSAGES_DIRECT = 1500;
 
     /** Chunk size for map-reduce on long conversations. */
-    private const CHUNK_SIZE = 300;
+    private const CHUNK_SIZE = 500;
 
     private string $apiKey;
     private string $model;
@@ -126,7 +126,8 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
     {
         $body = [
             'model'           => $this->model,
-            'temperature'     => 0.35,
+            'temperature'     => 0.5,
+            'max_tokens'      => 4096,
             'response_format' => ['type' => 'json_object'],
             'messages'        => [
                 ['role' => 'system', 'content' => $systemPrompt],
@@ -312,6 +313,12 @@ ABSOLUTE RULES — never violate any of these:
 6. If safety_flag was raised in a prior step, set chemistry_score to 0 and return minimal data.
 7. Base every insight on EVIDENCE from the actual conversation — no generic platitudes.
 8. {$languageDirective}
+
+DEPTH & QUALITY STANDARDS (this must read like a professional relationship analyst):
+- Be SPECIFIC. Quote or reference real moments, topics, and phrases from the chat. Never write vague filler.
+- Fully populate EVERY field for BOTH people — real names, 3-4 sentence style summaries, at least 3 concrete strengths each, and a genuine growth edge. Empty or one-word fields are unacceptable.
+- Score chemistry HONESTLY on the evidence: consider responsiveness, balance, warmth, humour, depth of topics, and consistency. A friendly, engaged chat should score high (70-95); only score low (<30) when the conversation is genuinely cold, one-sided, or sparse. Do not default to a low score.
+- Insights should feel personal and earned — the reader should think "wow, it really understood us".
 SYSTEM;
     }
 
@@ -422,13 +429,31 @@ PROMPT;
 
         return <<<PROMPT
 This is chunk {$index} of {$total} from a longer {$platform} conversation ({$count} messages in this chunk).
-Extract a mini-summary as JSON — this will be merged later:
+Extract a RICH mini-summary as JSON — this will be merged into a full report later, so capture
+per-person signals carefully. Identify the two participants by their exact display names.
 
 {
-  "topics_discussed": ["<topic 1>", "<topic 2>"],
+  "participants": ["<exact name of person 1>", "<exact name of person 2>"],
+  "topics_discussed": ["<specific topic 1>", "<specific topic 2>", "..."],
   "emotional_tone": "<positive|neutral|tense|playful|mixed>",
-  "interesting_exchanges": ["<verbatim quote or description of a notable moment>"],
-  "conflicts_noted": ["<brief neutral description of any friction>"],
+  "per_person": {
+    "<name of person 1>": {
+      "observed_traits": ["<how they communicate here>", "..."],
+      "initiates": <true|false>,
+      "response_length": "<short|medium|long>",
+      "emoji_usage": "<rare|occasional|frequent>",
+      "notable_strength": "<one concrete strength shown in this chunk>"
+    },
+    "<name of person 2>": {
+      "observed_traits": ["<how they communicate here>", "..."],
+      "initiates": <true|false>,
+      "response_length": "<short|medium|long>",
+      "emoji_usage": "<rare|occasional|frequent>",
+      "notable_strength": "<one concrete strength shown in this chunk>"
+    }
+  },
+  "interesting_exchanges": ["<verbatim quote or vivid description of a notable moment>"],
+  "conflicts_noted": ["<brief neutral description of any friction, if any>"],
   "shared_references": ["<inside joke, shared memory, or recurring theme>"]
 }
 
@@ -444,18 +469,40 @@ PROMPT;
 
         return <<<PROMPT
 You have {$totalMessages} messages summarised across the following {$chunkCount} chunk analyses.
-Synthesise them into a FINAL complete report using EXACTLY the same full JSON schema as the single-pass analysis:
+Synthesise them into a FINAL, complete and PROFESSIONAL report using EXACTLY this full JSON schema.
+The chunks include a "per_person" object per chunk — AGGREGATE those signals (traits, who initiates,
+response length, emoji usage, strengths) to build a rich communication_style for BOTH people. You MUST
+fully populate person_a and person_b with their real names — never leave them empty or generic.
 
 {
-  "chemistry_score": ...,
-  "common_interests": [...],
-  "communication_style": { "person_a": {...}, "person_b": {...} },
-  "misunderstanding_resolver": { "conflicts_detected": ..., "resolutions": [...] },
-  "memory_box": [...],
-  "activity_suggestions": [...]
+  "chemistry_score": <integer 1-100, justified by the evidence across all chunks>,
+  "common_interests": ["<specific interest>", "... (3-8 items)"],
+  "communication_style": {
+    "person_a": {
+      "name": "<exact display name of person 1>",
+      "style_summary": "<3-4 sentences: how they express themselves, emotional tone, what they value>",
+      "strengths": ["<specific strength 1>", "<specific strength 2>", "<specific strength 3>"],
+      "growth_edge": "<one gentle, constructive observation>",
+      "initiates_conversations": <true|false>,
+      "typical_response_length": "<short|medium|long>",
+      "emoji_usage": "<rare|occasional|frequent>"
+    },
+    "person_b": {
+      "name": "<exact display name of person 2>",
+      "style_summary": "<3-4 sentences>",
+      "strengths": ["<specific strength 1>", "<specific strength 2>", "<specific strength 3>"],
+      "growth_edge": "<one gentle observation>",
+      "initiates_conversations": <true|false>,
+      "typical_response_length": "<short|medium|long>",
+      "emoji_usage": "<rare|occasional|frequent>"
+    }
+  },
+  "misunderstanding_resolver": { "conflicts_detected": <int>, "resolutions": [ { "original_tension": "...", "likely_need_a": "...", "likely_need_b": "...", "reframe": "..." } ] },
+  "memory_box": [ { "type": "<funny|sweet|milestone>", "moment": "<1-2 sentences>", "quote": "<closest quote>" } ],
+  "activity_suggestions": [ { "activity": "...", "reason": "...", "vibe": "<cosy|adventurous|creative|relaxing|social>" } ]
 }
 
-Use the chunk data as evidence. Do not repeat information — synthesise it.
+Use the chunk data as evidence. Do not repeat information — synthesise it into deep, specific insights.
 
 CHUNK SUMMARIES:
 {$summariesJson}
