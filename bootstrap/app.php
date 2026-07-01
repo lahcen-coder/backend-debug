@@ -11,9 +11,9 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
-        $middleware->api(prepend: [
-            \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
-        ]);
+        // This is a pure token-based (Bearer) API — NOT cookie/CSRF based.
+        // Do NOT add EnsureFrontendRequestsAreStateful here, it would force
+        // stateful CSRF checks on the frontend origin and break register/login (419).
     })
     ->withExceptions(function (Exceptions $exceptions) {
         //

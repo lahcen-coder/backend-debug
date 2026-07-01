@@ -22,9 +22,10 @@ return [
     'max_age' => 86400,
 
     /*
-     * Must be true for Sanctum cookie-based auth.
-     * For token-based auth (Bearer) this can be false, but true is safer.
+     * Token-based (Bearer) API — no cookies are sent, so credentials
+     * are not required. Keeping this false avoids strict CORS preflight
+     * requirements around the Access-Control-Allow-Credentials header.
      */
-    'supports_credentials' => true,
+    'supports_credentials' => false,
 
 ];
