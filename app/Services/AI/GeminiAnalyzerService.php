@@ -564,6 +564,8 @@ using EXACTLY this schema — no additional keys, no omitted keys:
 
 CONVERSATION ({$messageCount} messages):
 {$formatted}
+
+{$this->languageReminder()}
 PROMPT;
     }
 
@@ -614,7 +616,27 @@ Use the chunk data as evidence. Do not repeat information — synthesise it.
 
 CHUNK SUMMARIES:
 {$summariesJson}
+
+{$this->languageReminder()}
 PROMPT;
+    }
+
+    /**
+     * Short, forceful reminder placed at the END of the analysis prompt so short
+     * fields (like common_interests) don't leak back to English.
+     */
+    private function languageReminder(): string
+    {
+        return match ($this->language) {
+            'spanish' => 'CRITICAL: EVERY string value in the JSON — including common_interests, '
+                . 'strengths, topics, activities and ALL short phrases — MUST be written in Spanish (Español). '
+                . 'Do NOT leave any value in English except the fixed enum values and JSON keys.',
+            'darija'  => 'CRITICAL: EVERY string value in the JSON — including common_interests, '
+                . 'strengths, topics, activities and ALL short phrases — MUST be written in Moroccan Darija '
+                . '(الدارجة المغربية) in Arabic script. Do NOT leave any value in English or Modern Standard '
+                . 'Arabic, except the fixed enum values and JSON keys.',
+            default   => 'Write every string value in clear, natural English.',
+        };
     }
 
     // ── Formatting Helpers ────────────────────────────────────────────────────

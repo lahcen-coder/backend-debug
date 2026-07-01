@@ -95,11 +95,14 @@ class AnalysisController extends Controller
         // ── Enforce plan message limit ────────────────────────────────────────
         $maxMessages = $user->plan->max_messages_per_analysis;
         $messages    = array_slice($data['messages'], 0, $maxMessages);
+        $language    = $data['language'] ?? 'english';
 
         // ── Deduplication via content hash ────────────────────────────────────
         // Build a stable, sorted hash of the cleaned message corpus so the same
         // conversation cannot be submitted twice within the cooldown window.
-        $payloadHash = $this->computePayloadHash($messages);
+        // The language is part of the hash so requesting a DIFFERENT language for
+        // the same conversation produces a fresh analysis (not the cached one).
+        $payloadHash = $this->computePayloadHash($messages, $language);
 
         $existing = Analysis::where('user_id', $user->id)
             ->where('clean_payload_hash', $payloadHash)
@@ -134,7 +137,6 @@ class AnalysisController extends Controller
 
         // Dispatch to Redis/Horizon queue — messages are NOT stored in the DB.
         // They live in the queue payload only, and are discarded after processing.
-        $language = $data['language'] ?? 'english';
         AnalyzeConversation::dispatch($analysis, $messages, $language)
             ->onQueue('analyses');
 
@@ -246,7 +248,7 @@ class AnalysisController extends Controller
      * Messages are sorted by timestamp before hashing so that order differences
      * in the same corpus produce the same hash.
      */
-    private function computePayloadHash(array $messages): string
+    private function computePayloadHash(array $messages, string $language = 'english'): string
     {
         usort($messages, fn ($a, $b) => strcmp((string) ($a['timestamp'] ?? ''), (string) ($b['timestamp'] ?? '')));
 
@@ -255,7 +257,7 @@ class AnalysisController extends Controller
             $messages
         );
 
-        return hash('sha256', implode("\n", $normalized));
+        return hash('sha256', $language . "\n" . implode("\n", $normalized));
     }
 
     /**
