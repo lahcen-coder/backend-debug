@@ -71,7 +71,8 @@ class AnalyzeConversation implements ShouldQueue
      */
     public function __construct(
         private readonly Analysis $analysis,
-        private readonly array $messages
+        private readonly array $messages,
+        private readonly string $language = 'english'
     ) {}
 
     /**
@@ -117,7 +118,7 @@ class AnalyzeConversation implements ShouldQueue
 
         try {
             $provider = (string) config('services.ai.primary', 'gemini');
-            $report   = $analyzer->analyze($this->messages, $this->analysis->platform);
+            $report   = $analyzer->analyze($this->messages, $this->analysis->platform, $this->language);
 
             $this->analysis->markCompleted($report, $provider);
 

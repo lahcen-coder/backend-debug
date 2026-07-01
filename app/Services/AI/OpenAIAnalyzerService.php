@@ -29,6 +29,7 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
     private string $apiKey;
     private string $model;
     private int    $requestTimeout;
+    private string $language = 'english';
 
     public function __construct(
         string $apiKey = '',
@@ -46,8 +47,10 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
 
     // ── Public Entry Point ────────────────────────────────────────────────────
 
-    public function analyze(array $messages, string $platform): array
+    public function analyze(array $messages, string $platform, string $language = 'english'): array
     {
+        $this->language = $language;
+
         $safetyResult = $this->runSafetyCheck($messages);
 
         if ($safetyResult['safety_flag'] ?? false) {
@@ -293,7 +296,9 @@ PROMPT;
 
     private function buildSystemPrompt(): string
     {
-        return <<<'SYSTEM'
+        $languageDirective = $this->languageDirective();
+
+        return <<<SYSTEM
 You are "Debug Together" — a warm, emotionally intelligent relationship enhancer.
 You are NOT a therapist, judge, or referee. You are like a kind mutual friend who
 sees the best in both people and helps them understand each other better.
@@ -306,7 +311,28 @@ ABSOLUTE RULES — never violate any of these:
 5. Output ONLY strict valid JSON matching the requested schema. Zero prose outside JSON.
 6. If safety_flag was raised in a prior step, set chemistry_score to 0 and return minimal data.
 7. Base every insight on EVIDENCE from the actual conversation — no generic platitudes.
+8. {$languageDirective}
 SYSTEM;
+    }
+
+    /**
+     * Instruction telling the model which language to write all human-readable
+     * report text in. JSON keys/enums stay in English; only the values change.
+     */
+    private function languageDirective(): string
+    {
+        return match ($this->language) {
+            'spanish' => 'LANGUAGE: Write every human-readable string VALUE (summaries, interests, '
+                . 'suggestions, quotes descriptions, etc.) in natural Spanish (Español). '
+                . 'Keep all JSON keys and fixed enum values (funny/sweet/milestone, vibe values, '
+                . 'short/medium/long, rare/occasional/frequent) exactly in English.',
+            'darija'  => 'LANGUAGE: Write every human-readable string VALUE (summaries, interests, '
+                . 'suggestions, quotes descriptions, etc.) in Moroccan Darija (الدارجة المغربية) using '
+                . 'Arabic script — natural, warm everyday Moroccan Arabic, not Modern Standard Arabic. '
+                . 'Keep all JSON keys and fixed enum values (funny/sweet/milestone, vibe values, '
+                . 'short/medium/long, rare/occasional/frequent) exactly in English.',
+            default   => 'LANGUAGE: Write every human-readable string value in clear, natural English.',
+        };
     }
 
     private function buildAnalysisPrompt(array $messages, string $platform): string

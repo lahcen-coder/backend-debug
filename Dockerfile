@@ -51,6 +51,7 @@ RUN docker-php-ext-configure intl \
 
 # Copy runtime configuration
 COPY docker/php.ini          /usr/local/etc/php/conf.d/app.ini
+COPY docker/www.conf         /usr/local/etc/php-fpm.d/zz-www.conf
 COPY docker/nginx.conf       /etc/nginx/http.d/default.conf
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY docker/start.sh         /usr/local/bin/start.sh

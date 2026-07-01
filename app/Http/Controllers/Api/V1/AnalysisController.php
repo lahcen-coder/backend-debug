@@ -84,6 +84,7 @@ class AnalysisController extends Controller
         $data = $request->validate([
             'platform'     => ['required', Rule::in(['instagram', 'whatsapp'])],
             'partner_name' => ['required', 'string', 'max:255'],
+            'language'     => ['nullable', Rule::in(['english', 'spanish', 'darija'])],
             'messages'     => ['required', 'array', 'min:10'],
             // Per-message rules — validated lazily to give a clear field-level error
             'messages.*.sender'    => ['required', 'string', 'max:255'],
@@ -133,7 +134,8 @@ class AnalysisController extends Controller
 
         // Dispatch to Redis/Horizon queue — messages are NOT stored in the DB.
         // They live in the queue payload only, and are discarded after processing.
-        AnalyzeConversation::dispatch($analysis, $messages)
+        $language = $data['language'] ?? 'english';
+        AnalyzeConversation::dispatch($analysis, $messages, $language)
             ->onQueue('analyses');
 
         return response()->json([

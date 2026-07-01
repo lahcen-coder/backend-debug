@@ -16,7 +16,8 @@ interface ConversationAnalyzer
      *
      * @param  array  $messages  Clean message array: [{ sender, text, timestamp }]
      * @param  string $platform  'instagram' | 'whatsapp'
+     * @param  string $language  Output language: 'english' | 'spanish' | 'darija'
      * @return array             Structured report (chemistry_score, …).
      */
-    public function analyze(array $messages, string $platform): array;
+    public function analyze(array $messages, string $platform, string $language = 'english'): array;
 }
