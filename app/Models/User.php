@@ -130,14 +130,16 @@ class User extends Authenticatable implements MustVerifyEmail
         );
     }
 
+    // NOTE: Quotas are currently disabled — the app is open/unlimited for
+    // all users. Re-enable the original checks below to bring back plan limits.
     public function hasReachedAnalysisLimit(): bool
     {
-        return $this->currentUsage()->analyses_used >= $this->plan->monthly_analyses;
+        return false;
     }
 
     public function hasReachedTokenLimit(): bool
     {
-        return $this->currentUsage()->tokens_used >= $this->plan->monthly_token_budget;
+        return false;
     }
 
     /** Whether the user is on a paid membership tier. */
