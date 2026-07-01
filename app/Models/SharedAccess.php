@@ -19,6 +19,10 @@ use Illuminate\Support\Str;
  */
 class SharedAccess extends Model
 {
+    // Migration creates the table as singular "shared_access"; override the
+    // default plural "shared_accesses" so queries hit the right table.
+    protected $table = 'shared_access';
+
     protected $fillable = [
         'analysis_id',
         'owner_id',
