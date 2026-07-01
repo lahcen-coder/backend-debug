@@ -352,6 +352,10 @@ class GeminiAnalyzerService implements ConversationAnalyzer
                 $report['connection_questions'] ?? []
             ),
 
+            'love_languages'  => $this->normalizeLoveLanguages($report['love_languages'] ?? []),
+            'sweet_messages'  => $this->normalizeSweetMessages($report['sweet_messages'] ?? []),
+            'make_them_happy' => $this->normalizeMakeThemHappy($report['make_them_happy'] ?? []),
+
             'safety_flag'  => (bool)   ($report['safety_flag']  ?? false),
             'generated_at' => (string) ($report['generated_at'] ?? now()->toIso8601String()),
         ];
@@ -422,6 +426,66 @@ class GeminiAnalyzerService implements ConversationAnalyzer
             0,
             6
         );
+    }
+
+    private function normalizeLoveLanguages(mixed $raw): array
+    {
+        if (! is_array($raw)) return ['person_a' => [], 'person_b' => []];
+
+        $person = function (mixed $p): array {
+            if (! is_array($p)) return [];
+            return [
+                'name'             => (string) ($p['name'] ?? ''),
+                'primary'          => (string) ($p['primary'] ?? ''),
+                'how_to_show_love' => array_values(array_filter(
+                    (array) ($p['how_to_show_love'] ?? []),
+                    fn ($v) => is_string($v) && strlen(trim($v)) > 0
+                )),
+            ];
+        };
+
+        return [
+            'person_a' => $person($raw['person_a'] ?? null),
+            'person_b' => $person($raw['person_b'] ?? null),
+        ];
+    }
+
+    private function normalizeSweetMessages(mixed $raw): array
+    {
+        if (! is_array($raw)) return [];
+
+        return array_slice(
+            array_values(array_filter(
+                $raw,
+                fn ($item) => is_array($item)
+                    && isset($item['text'])
+                    && is_string($item['text'])
+                    && strlen(trim($item['text'])) > 0
+            )),
+            0,
+            6
+        );
+    }
+
+    private function normalizeMakeThemHappy(mixed $raw): array
+    {
+        if (! is_array($raw)) return ['person_a' => [], 'person_b' => []];
+
+        $person = function (mixed $p): array {
+            if (! is_array($p)) return [];
+            return [
+                'name' => (string) ($p['name'] ?? ''),
+                'tips' => array_values(array_filter(
+                    (array) ($p['tips'] ?? []),
+                    fn ($v) => is_string($v) && strlen(trim($v)) > 0
+                )),
+            ];
+        };
+
+        return [
+            'person_a' => $person($raw['person_a'] ?? null),
+            'person_b' => $person($raw['person_b'] ?? null),
+        ];
     }
 
     // ── Cost Estimation ───────────────────────────────────────────────────────
@@ -588,7 +652,39 @@ using EXACTLY this schema — no additional keys, no omitted keys:
       "why": "<one short sentence on how this question helps them understand each other more deeply>"
     }
     ... (exactly 5 questions, ranging from playful to emotionally deep, all grounded in their actual conversation)
-  ]
+  ],
+
+  "love_languages": {
+    "person_a": {
+      "name": "<exact display name of person 1>",
+      "primary": "<their likely primary love language inferred from the chat — e.g. 'words of affirmation', 'quality time', 'acts of service', 'physical touch', 'gifts'>",
+      "how_to_show_love": ["<concrete, specific way to make THIS person feel loved, grounded in the chat>", "<another concrete way>", "<a third way>"]
+    },
+    "person_b": {
+      "name": "<exact display name of person 2>",
+      "primary": "<their likely primary love language>",
+      "how_to_show_love": ["<concrete way>", "<another>", "<a third>"]
+    }
+  },
+
+  "sweet_messages": [
+    {
+      "text": "<a warm, ready-to-send heartfelt message one partner could send the other, grounded in a real shared memory, joke, or theme from their chat. Sound natural and personal, not generic>",
+      "occasion": "<good morning | appreciation | miss you | apology | just because | encouragement>"
+    }
+    ... (exactly 4 messages covering different occasions)
+  ],
+
+  "make_them_happy": {
+    "person_a": {
+      "name": "<exact display name of person 1>",
+      "tips": ["<a small, concrete thing that clearly brightens THIS person's mood based on the chat>", "<another>", "<a third>"]
+    },
+    "person_b": {
+      "name": "<exact display name of person 2>",
+      "tips": ["<concrete thing>", "<another>", "<a third>"]
+    }
+  }
 }
 
 CONVERSATION ({$messageCount} messages):
@@ -639,7 +735,10 @@ Synthesise them into a FINAL complete report using EXACTLY the same full JSON sc
   "misunderstanding_resolver": { "conflicts_detected": ..., "resolutions": [...] },
   "memory_box": [...],
   "activity_suggestions": [...],
-  "connection_questions": [ { "question": "<a heartfelt, deep, open-ended question grounded in their real topics/memories that helps them grow closer>", "why": "<one short sentence on how it deepens their bond>" } ]
+  "connection_questions": [ { "question": "<a heartfelt, deep, open-ended question grounded in their real topics/memories that helps them grow closer>", "why": "<one short sentence on how it deepens their bond>" } ],
+  "love_languages": { "person_a": { "name": "...", "primary": "...", "how_to_show_love": ["...", "..."] }, "person_b": { "name": "...", "primary": "...", "how_to_show_love": ["...", "..."] } },
+  "sweet_messages": [ { "text": "<ready-to-send heartfelt message grounded in a real shared memory/theme>", "occasion": "<good morning|appreciation|miss you|apology|just because|encouragement>" } ],
+  "make_them_happy": { "person_a": { "name": "...", "tips": ["...", "..."] }, "person_b": { "name": "...", "tips": ["...", "..."] } }
 }
 
 Use the chunk data as evidence. Do not repeat information — synthesise it.
