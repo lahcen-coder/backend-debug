@@ -6,7 +6,7 @@ namespace App\Jobs;
 
 use App\Exceptions\RateLimitException;
 use App\Models\Analysis;
-use App\Services\AI\GeminiAnalyzerService;
+use App\Services\AI\ConversationAnalyzer;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -95,7 +95,7 @@ class AnalyzeConversation implements ShouldQueue
      * Marked as `processing`, the AI service is called, and the result is
      * stored as `report_data` JSON on the Analysis record via markCompleted().
      */
-    public function handle(GeminiAnalyzerService $gemini): void
+    public function handle(ConversationAnalyzer $analyzer): void
     {
         // Guard: if already completed or failed from a previous attempt, bail out.
         $this->analysis->refresh();
@@ -116,9 +116,10 @@ class AnalyzeConversation implements ShouldQueue
         $this->analysis->markProcessing();
 
         try {
-            $report = $gemini->analyze($this->messages, $this->analysis->platform);
+            $provider = (string) config('services.ai.primary', 'gemini');
+            $report   = $analyzer->analyze($this->messages, $this->analysis->platform);
 
-            $this->analysis->markCompleted($report, 'gemini');
+            $this->analysis->markCompleted($report, $provider);
 
             Log::info('AnalyzeConversation completed', [
                 'analysis_id'     => $this->analysis->id,

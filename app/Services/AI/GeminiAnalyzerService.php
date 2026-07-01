@@ -36,7 +36,7 @@ use Illuminate\Support\Facades\Log;
  *   - Timeout   → throws ConnectionException (job retries with exponential back-off)
  *   - Bad JSON  → attempts to extract JSON from prose, then throws AIProviderException
  */
-class GeminiAnalyzerService
+class GeminiAnalyzerService implements ConversationAnalyzer
 {
     private const API_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
