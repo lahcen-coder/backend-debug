@@ -65,6 +65,9 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
                 'misunderstanding_resolver' => ['conflicts_detected' => 0, 'resolutions' => []],
                 'memory_box'                => [],
                 'activity_suggestions'      => [],
+                'top_words'                 => [],
+                'most_positive'             => [],
+                'conversation_summary'      => '',
                 'safety_flag'               => true,
                 'generated_at'              => now()->toIso8601String(),
             ];
@@ -222,8 +225,45 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
             'sweet_messages'  => $this->normalizeSweetMessages($report['sweet_messages'] ?? []),
             'make_them_happy' => $this->normalizeMakeThemHappy($report['make_them_happy'] ?? []),
 
+            'top_words'            => $this->normalizeTopWords($report['top_words'] ?? []),
+            'most_positive'        => $this->normalizeMostPositive($report['most_positive'] ?? []),
+            'conversation_summary' => trim((string) ($report['conversation_summary'] ?? '')),
+
             'safety_flag'  => (bool)   ($report['safety_flag']  ?? false),
             'generated_at' => (string) ($report['generated_at'] ?? now()->toIso8601String()),
+        ];
+    }
+
+    private function normalizeTopWords(mixed $raw): array
+    {
+        if (! is_array($raw)) return [];
+
+        return array_slice(
+            array_values(array_filter(array_map(
+                function ($item) {
+                    if (! is_array($item) || empty($item['word'])) return null;
+                    return [
+                        'word'  => (string) $item['word'],
+                        'count' => max(1, (int) ($item['count'] ?? 1)),
+                    ];
+                },
+                $raw
+            ))),
+            0,
+            12
+        );
+    }
+
+    private function normalizeMostPositive(mixed $raw): array
+    {
+        if (! is_array($raw)) return [];
+
+        $name = trim((string) ($raw['name'] ?? ''));
+        if ($name === '') return [];
+
+        return [
+            'name'   => $name,
+            'reason' => trim((string) ($raw['reason'] ?? '')),
         ];
     }
 
@@ -535,7 +575,22 @@ using EXACTLY this schema — no additional keys, no omitted keys:
       "name": "<exact display name of person 2>",
       "tips": ["<concrete thing>", "<another>", "<a third>"]
     }
-  }
+  },
+
+  "top_words": [
+    {
+      "word": "<a meaningful word or short phrase they genuinely use a lot (skip trivial stop-words like 'the', 'and'; keep emojis or expressions if they're characteristic)>",
+      "count": <approximate number of times it appears across the whole conversation>
+    }
+    ... (8-12 items, ordered from most to least frequent)
+  ],
+
+  "most_positive": {
+    "name": "<exact display name of whichever person brings MORE positivity, warmth, and encouragement to the conversation>",
+    "reason": "<2-3 warm sentences explaining, with evidence from the chat, why this person radiates more positivity — without putting the other person down>"
+  },
+
+  "conversation_summary": "<ONE single, warm sentence that captures the essence of this whole conversation and relationship>"
 }
 
 CONVERSATION ({$messageCount} messages):
@@ -577,7 +632,9 @@ per-person signals carefully. Identify the two participants by their exact displ
   },
   "interesting_exchanges": ["<verbatim quote or vivid description of a notable moment>"],
   "conflicts_noted": ["<brief neutral description of any friction, if any>"],
-  "shared_references": ["<inside joke, shared memory, or recurring theme>"]
+  "shared_references": ["<inside joke, shared memory, or recurring theme>"],
+  "frequent_words": [ { "word": "<meaningful word/phrase used a lot in this chunk, skip trivial stop-words>", "count": <occurrences in this chunk> } ],
+  "more_positive_here": "<exact name of whoever is more positive in this chunk, or 'balanced'>"
 }
 
 CHUNK {$index}/{$total}:
@@ -626,7 +683,10 @@ fully populate person_a and person_b with their real names — never leave them 
   "connection_questions": [ { "question": "<a heartfelt, deep, open-ended question grounded in their real topics/memories that helps them grow closer>", "why": "<one short sentence on how it deepens their bond>" } ],
   "love_languages": { "person_a": { "name": "...", "primary": "...", "how_to_show_love": ["...", "..."] }, "person_b": { "name": "...", "primary": "...", "how_to_show_love": ["...", "..."] } },
   "sweet_messages": [ { "text": "<ready-to-send heartfelt message grounded in a real shared memory/theme>", "occasion": "<good morning|appreciation|miss you|apology|just because|encouragement>" } ],
-  "make_them_happy": { "person_a": { "name": "...", "tips": ["...", "..."] }, "person_b": { "name": "...", "tips": ["...", "..."] } }
+  "make_them_happy": { "person_a": { "name": "...", "tips": ["...", "..."] }, "person_b": { "name": "...", "tips": ["...", "..."] } },
+  "top_words": [ { "word": "<meaningful frequent word/phrase, skip trivial stop-words>", "count": <approx total occurrences> } (8-12 items, most to least frequent, aggregated across all chunks) ],
+  "most_positive": { "name": "<exact name of whoever brings more positivity>", "reason": "<2-3 warm sentences with evidence, without putting the other down>" },
+  "conversation_summary": "<ONE single warm sentence capturing the essence of the whole conversation>"
 }
 
 Use the chunk data as evidence. Do not repeat information — synthesise it into deep, specific insights.
