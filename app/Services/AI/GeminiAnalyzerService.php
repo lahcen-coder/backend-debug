@@ -148,13 +148,30 @@ class GeminiAnalyzerService implements ConversationAnalyzer
 
     // ── Direct Analysis (≤ 2 000 messages) ───────────────────────────────────
 
+    /**
+     * The full report schema is large (2 communication profiles, 5 connection
+     * questions, 4 sweet messages, love languages, memory box, etc.). Asking
+     * for it in a single completion risks hitting the model's MAX_TOKENS
+     * ceiling — especially for non-Latin scripts like Darija, which need far
+     * more tokens per unit of content than English/Spanish. Splitting the
+     * schema into two smaller calls (core + extended) roughly halves the
+     * per-call output size, giving enough headroom regardless of language.
+     */
     private function runDirectAnalysis(array $messages, string $platform): array
     {
-        return $this->callGemini(
+        $core = $this->callGemini(
             $this->analysisModel,
             $this->buildSystemPrompt(),
-            $this->buildAnalysisPrompt($messages, $platform)
+            $this->buildCoreAnalysisPrompt($messages, $platform)
         );
+
+        $extended = $this->callGemini(
+            $this->analysisModel,
+            $this->buildSystemPrompt(),
+            $this->buildExtendedAnalysisPrompt($messages, $platform)
+        );
+
+        return array_merge($core, $extended);
     }
 
     // ── Chunked (Map-Reduce) Analysis (> 2 000 messages) ─────────────────────
@@ -173,11 +190,19 @@ class GeminiAnalyzerService implements ConversationAnalyzer
             );
         }
 
-        return $this->callGemini(
+        $core = $this->callGemini(
             $this->analysisModel,
             $this->buildSystemPrompt(),
-            $this->buildChunkReducePrompt($chunkSums, count($messages))
+            $this->buildCoreReducePrompt($chunkSums, count($messages))
         );
+
+        $extended = $this->callGemini(
+            $this->analysisModel,
+            $this->buildSystemPrompt(),
+            $this->buildExtendedReducePrompt($chunkSums, count($messages))
+        );
+
+        return array_merge($core, $extended);
     }
 
     // ── Gemini HTTP Client ────────────────────────────────────────────────────
@@ -252,6 +277,16 @@ class GeminiAnalyzerService implements ConversationAnalyzer
         if ($finishReason === 'RECITATION') {
             throw new AIProviderException(
                 "Gemini refused the response due to recitation policy on model {$model}."
+            );
+        }
+
+        // ── Handle truncated output ────────────────────────────────────────────
+        // Fail loudly and distinctly instead of silently trying to parse
+        // cut-off JSON. The queue job will retry with back-off.
+        if ($finishReason === 'MAX_TOKENS') {
+            throw new AIProviderException(
+                "Gemini response was truncated (MAX_TOKENS) on model {$model}. " .
+                'The requested output exceeded the token budget.'
             );
         }
 
@@ -614,7 +649,12 @@ SYSTEM;
         };
     }
 
-    private function buildAnalysisPrompt(array $messages, string $platform): string
+    /**
+     * Core half of the report schema (chemistry, interests, communication
+     * style, conflicts, memories, word stats, summary). Kept in its own call
+     * so the output stays comfortably under the model's MAX_TOKENS ceiling.
+     */
+    private function buildCoreAnalysisPrompt(array $messages, string $platform): string
     {
         $formatted    = $this->formatMessages($messages);
         $messageCount = $this->count($messages);
@@ -677,6 +717,47 @@ using EXACTLY this schema — no additional keys, no omitted keys:
     ... (exactly 3 items: pick the most memorable funny moment, the sweetest moment, and a milestone)
   ],
 
+  "top_words": [
+    {
+      "word": "<a meaningful word or short phrase they genuinely use a lot (skip trivial stop-words like 'the', 'and'; keep emojis or expressions if they're characteristic)>",
+      "count": <approximate number of times it appears across the whole conversation>
+    }
+    ... (8-12 items, ordered from most to least frequent)
+  ],
+
+  "most_positive": {
+    "name": "<exact display name of whichever person brings MORE positivity, warmth, and encouragement to the conversation>",
+    "reason": "<2-3 warm sentences explaining, with evidence from the chat, why this person radiates more positivity — without putting the other person down>"
+  },
+
+  "conversation_summary": "<ONE single, warm sentence that captures the essence of this whole conversation and relationship>"
+}
+
+CONVERSATION ({$messageCount} messages):
+{$formatted}
+
+{$this->languageReminder()}
+PROMPT;
+    }
+
+    /**
+     * Extended half of the report schema (activities, connection questions,
+     * love languages, sweet messages, make-them-happy tips). Split out from
+     * the core prompt for the same MAX_TOKENS headroom reasons.
+     */
+    private function buildExtendedAnalysisPrompt(array $messages, string $platform): string
+    {
+        $formatted    = $this->formatMessages($messages);
+        $messageCount = $this->count($messages);
+        $platformNote = $platform === 'instagram'
+            ? 'This is an Instagram DM conversation.'
+            : 'This is a WhatsApp conversation.';
+
+        return <<<PROMPT
+{$platformNote} Analyse the following {$messageCount} messages and return a JSON report
+using EXACTLY this schema — no additional keys, no omitted keys:
+
+{
   "activity_suggestions": [
     {
       "activity": "<a specific, personalised suggestion — e.g. 'Try recreating that pasta dish you both kept talking about'>",
@@ -724,22 +805,7 @@ using EXACTLY this schema — no additional keys, no omitted keys:
       "name": "<exact display name of person 2>",
       "tips": ["<concrete thing>", "<another>", "<a third>"]
     }
-  },
-
-  "top_words": [
-    {
-      "word": "<a meaningful word or short phrase they genuinely use a lot (skip trivial stop-words like 'the', 'and'; keep emojis or expressions if they're characteristic)>",
-      "count": <approximate number of times it appears across the whole conversation>
-    }
-    ... (8-12 items, ordered from most to least frequent)
-  ],
-
-  "most_positive": {
-    "name": "<exact display name of whichever person brings MORE positivity, warmth, and encouragement to the conversation>",
-    "reason": "<2-3 warm sentences explaining, with evidence from the chat, why this person radiates more positivity — without putting the other person down>"
-  },
-
-  "conversation_summary": "<ONE single, warm sentence that captures the essence of this whole conversation and relationship>"
+  }
 }
 
 CONVERSATION ({$messageCount} messages):
@@ -777,13 +843,17 @@ CHUNK {$index}/{$total}:
 PROMPT;
     }
 
-    private function buildChunkReducePrompt(array $chunkSummaries, int $totalMessages): string
+    /**
+     * Core half of the reduce step. Split from the extended half for the
+     * same MAX_TOKENS headroom reasons as buildCoreAnalysisPrompt().
+     */
+    private function buildCoreReducePrompt(array $chunkSummaries, int $totalMessages): string
     {
         $summariesJson = json_encode($chunkSummaries, JSON_PRETTY_PRINT);
 
         return <<<PROMPT
 You have {$totalMessages} messages summarised across the following {$this->count($chunkSummaries)} chunk analyses.
-Synthesise them into a FINAL complete report using EXACTLY the same full JSON schema as the single-pass analysis:
+Synthesise them into a FINAL complete report using EXACTLY this JSON schema:
 
 {
   "chemistry_score": ...,
@@ -791,14 +861,38 @@ Synthesise them into a FINAL complete report using EXACTLY the same full JSON sc
   "communication_style": { "person_a": {...}, "person_b": {...} },
   "misunderstanding_resolver": { "conflicts_detected": ..., "resolutions": [...] },
   "memory_box": [...],
+  "top_words": [ { "word": "<meaningful frequent word/phrase, skip trivial stop-words>", "count": <approx total occurrences> } (8-12 items, most to least frequent, aggregated across all chunks) ],
+  "most_positive": { "name": "<exact name of whoever brings more positivity>", "reason": "<2-3 warm sentences with evidence, without putting the other down>" },
+  "conversation_summary": "<ONE single warm sentence capturing the essence of the whole conversation>"
+}
+
+Use the chunk data as evidence. Do not repeat information — synthesise it.
+
+CHUNK SUMMARIES:
+{$summariesJson}
+
+{$this->languageReminder()}
+PROMPT;
+    }
+
+    /**
+     * Extended half of the reduce step (activities, connection questions,
+     * love languages, sweet messages, make-them-happy tips).
+     */
+    private function buildExtendedReducePrompt(array $chunkSummaries, int $totalMessages): string
+    {
+        $summariesJson = json_encode($chunkSummaries, JSON_PRETTY_PRINT);
+
+        return <<<PROMPT
+You have {$totalMessages} messages summarised across the following {$this->count($chunkSummaries)} chunk analyses.
+Synthesise them into a FINAL complete report using EXACTLY this JSON schema:
+
+{
   "activity_suggestions": [...],
   "connection_questions": [ { "question": "<a heartfelt, deep, open-ended question grounded in their real topics/memories that helps them grow closer>", "why": "<one short sentence on how it deepens their bond>" } ],
   "love_languages": { "person_a": { "name": "...", "primary": "...", "how_to_show_love": ["...", "..."] }, "person_b": { "name": "...", "primary": "...", "how_to_show_love": ["...", "..."] } },
   "sweet_messages": [ { "text": "<ready-to-send heartfelt message grounded in a real shared memory/theme>", "occasion": "<good morning|appreciation|miss you|apology|just because|encouragement>" } ],
-  "make_them_happy": { "person_a": { "name": "...", "tips": ["...", "..."] }, "person_b": { "name": "...", "tips": ["...", "..."] } },
-  "top_words": [ { "word": "<meaningful frequent word/phrase, skip trivial stop-words>", "count": <approx total occurrences> } (8-12 items, most to least frequent, aggregated across all chunks) ],
-  "most_positive": { "name": "<exact name of whoever brings more positivity>", "reason": "<2-3 warm sentences with evidence, without putting the other down>" },
-  "conversation_summary": "<ONE single warm sentence capturing the essence of the whole conversation>"
+  "make_them_happy": { "person_a": { "name": "...", "tips": ["...", "..."] }, "person_b": { "name": "...", "tips": ["...", "..."] } }
 }
 
 Use the chunk data as evidence. Do not repeat information — synthesise it.

@@ -96,12 +96,28 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
         ];
     }
 
+    /**
+     * The full report schema is large (2 communication profiles, 5 connection
+     * questions, 4 sweet messages, love languages, memory box, etc.). Asking
+     * for it in a single completion risks hitting the model's token ceiling —
+     * especially for non-Latin scripts like Darija, which need far more
+     * tokens per unit of content than English/Spanish. Splitting the schema
+     * into two smaller calls (core + extended) roughly halves the per-call
+     * output size, giving enough headroom regardless of language.
+     */
     private function runDirectAnalysis(array $messages, string $platform): array
     {
-        return $this->callOpenAI(
+        $core = $this->callOpenAI(
             $this->buildSystemPrompt(),
-            $this->buildAnalysisPrompt($messages, $platform)
+            $this->buildCoreAnalysisPrompt($messages, $platform)
         );
+
+        $extended = $this->callOpenAI(
+            $this->buildSystemPrompt(),
+            $this->buildExtendedAnalysisPrompt($messages, $platform)
+        );
+
+        return array_merge($core, $extended);
     }
 
     private function runChunkedAnalysis(array $messages, string $platform): array
@@ -117,10 +133,17 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
             );
         }
 
-        return $this->callOpenAI(
+        $core = $this->callOpenAI(
             $this->buildSystemPrompt(),
-            $this->buildChunkReducePrompt($chunkSums, count($messages))
+            $this->buildCoreReducePrompt($chunkSums, count($messages))
         );
+
+        $extended = $this->callOpenAI(
+            $this->buildSystemPrompt(),
+            $this->buildExtendedReducePrompt($chunkSums, count($messages))
+        );
+
+        return array_merge($core, $extended);
     }
 
     // ── OpenAI HTTP Client ────────────────────────────────────────────────────
@@ -130,7 +153,7 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
         $body = [
             'model'           => $this->model,
             'temperature'     => 0.5,
-            'max_tokens'      => 8192,
+            'max_tokens'      => 16384,
             'response_format' => ['type' => 'json_object'],
             'messages'        => [
                 ['role' => 'system', 'content' => $systemPrompt],
@@ -163,6 +186,17 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
 
         if (empty($rawText)) {
             throw new AIProviderException("OpenAI returned an empty response from model {$this->model}.");
+        }
+
+        // ── Handle truncated output ────────────────────────────────────────────
+        // Fail loudly and distinctly instead of silently trying to parse
+        // cut-off JSON. The queue job will retry with back-off.
+        $finishReason = $data['choices'][0]['finish_reason'] ?? 'stop';
+        if ($finishReason === 'length') {
+            throw new AIProviderException(
+                "OpenAI response was truncated (finish_reason=length) on model {$this->model}. " .
+                'The requested output exceeded the token budget.'
+            );
         }
 
         Log::debug('OpenAIAnalyzerService: API call', [
@@ -465,7 +499,12 @@ SYSTEM;
         };
     }
 
-    private function buildAnalysisPrompt(array $messages, string $platform): string
+    /**
+     * Core half of the report schema (chemistry, interests, communication
+     * style, conflicts, memories, word stats, summary). Kept in its own call
+     * so the output stays comfortably under the model's token ceiling.
+     */
+    private function buildCoreAnalysisPrompt(array $messages, string $platform): string
     {
         $formatted    = $this->formatMessages($messages);
         $messageCount = count($messages);
@@ -528,6 +567,47 @@ using EXACTLY this schema — no additional keys, no omitted keys:
     ... (exactly 3 items: funniest, sweetest, and a milestone)
   ],
 
+  "top_words": [
+    {
+      "word": "<a meaningful word or short phrase they genuinely use a lot (skip trivial stop-words like 'the', 'and'; keep emojis or expressions if they're characteristic)>",
+      "count": <approximate number of times it appears across the whole conversation>
+    }
+    ... (8-12 items, ordered from most to least frequent)
+  ],
+
+  "most_positive": {
+    "name": "<exact display name of whichever person brings MORE positivity, warmth, and encouragement to the conversation>",
+    "reason": "<2-3 warm sentences explaining, with evidence from the chat, why this person radiates more positivity — without putting the other person down>"
+  },
+
+  "conversation_summary": "<ONE single, warm sentence that captures the essence of this whole conversation and relationship>"
+}
+
+CONVERSATION ({$messageCount} messages):
+{$formatted}
+
+{$this->languageReminder()}
+PROMPT;
+    }
+
+    /**
+     * Extended half of the report schema (activities, connection questions,
+     * love languages, sweet messages, make-them-happy tips). Split out from
+     * the core prompt for the same token-ceiling headroom reasons.
+     */
+    private function buildExtendedAnalysisPrompt(array $messages, string $platform): string
+    {
+        $formatted    = $this->formatMessages($messages);
+        $messageCount = count($messages);
+        $platformNote = $platform === 'instagram'
+            ? 'This is an Instagram DM conversation.'
+            : 'This is a WhatsApp conversation.';
+
+        return <<<PROMPT
+{$platformNote} Analyse the following {$messageCount} messages and return a JSON report
+using EXACTLY this schema — no additional keys, no omitted keys:
+
+{
   "activity_suggestions": [
     {
       "activity": "<a specific, personalised suggestion>",
@@ -575,22 +655,7 @@ using EXACTLY this schema — no additional keys, no omitted keys:
       "name": "<exact display name of person 2>",
       "tips": ["<concrete thing>", "<another>", "<a third>"]
     }
-  },
-
-  "top_words": [
-    {
-      "word": "<a meaningful word or short phrase they genuinely use a lot (skip trivial stop-words like 'the', 'and'; keep emojis or expressions if they're characteristic)>",
-      "count": <approximate number of times it appears across the whole conversation>
-    }
-    ... (8-12 items, ordered from most to least frequent)
-  ],
-
-  "most_positive": {
-    "name": "<exact display name of whichever person brings MORE positivity, warmth, and encouragement to the conversation>",
-    "reason": "<2-3 warm sentences explaining, with evidence from the chat, why this person radiates more positivity — without putting the other person down>"
-  },
-
-  "conversation_summary": "<ONE single, warm sentence that captures the essence of this whole conversation and relationship>"
+  }
 }
 
 CONVERSATION ({$messageCount} messages):
@@ -642,14 +707,18 @@ CHUNK {$index}/{$total}:
 PROMPT;
     }
 
-    private function buildChunkReducePrompt(array $chunkSummaries, int $totalMessages): string
+    /**
+     * Core half of the reduce step. Split from the extended half for the
+     * same token-ceiling headroom reasons as buildCoreAnalysisPrompt().
+     */
+    private function buildCoreReducePrompt(array $chunkSummaries, int $totalMessages): string
     {
         $summariesJson = json_encode($chunkSummaries, JSON_PRETTY_PRINT);
         $chunkCount    = count($chunkSummaries);
 
         return <<<PROMPT
 You have {$totalMessages} messages summarised across the following {$chunkCount} chunk analyses.
-Synthesise them into a FINAL, complete and PROFESSIONAL report using EXACTLY this full JSON schema.
+Synthesise them into a FINAL, complete and PROFESSIONAL report using EXACTLY this JSON schema.
 The chunks include a "per_person" object per chunk — AGGREGATE those signals (traits, who initiates,
 response length, emoji usage, strengths) to build a rich communication_style for BOTH people. You MUST
 fully populate person_a and person_b with their real names — never leave them empty or generic.
@@ -679,14 +748,39 @@ fully populate person_a and person_b with their real names — never leave them 
   },
   "misunderstanding_resolver": { "conflicts_detected": <int>, "resolutions": [ { "original_tension": "...", "likely_need_a": "...", "likely_need_b": "...", "reframe": "..." } ] },
   "memory_box": [ { "type": "<funny|sweet|milestone>", "moment": "<1-2 sentences>", "quote": "<closest quote>" } ],
+  "top_words": [ { "word": "<meaningful frequent word/phrase, skip trivial stop-words>", "count": <approx total occurrences> } (8-12 items, most to least frequent, aggregated across all chunks) ],
+  "most_positive": { "name": "<exact name of whoever brings more positivity>", "reason": "<2-3 warm sentences with evidence, without putting the other down>" },
+  "conversation_summary": "<ONE single warm sentence capturing the essence of the whole conversation>"
+}
+
+Use the chunk data as evidence. Do not repeat information — synthesise it into deep, specific insights.
+
+CHUNK SUMMARIES:
+{$summariesJson}
+
+{$this->languageReminder()}
+PROMPT;
+    }
+
+    /**
+     * Extended half of the reduce step (activities, connection questions,
+     * love languages, sweet messages, make-them-happy tips).
+     */
+    private function buildExtendedReducePrompt(array $chunkSummaries, int $totalMessages): string
+    {
+        $summariesJson = json_encode($chunkSummaries, JSON_PRETTY_PRINT);
+        $chunkCount    = count($chunkSummaries);
+
+        return <<<PROMPT
+You have {$totalMessages} messages summarised across the following {$chunkCount} chunk analyses.
+Synthesise them into a FINAL, complete and PROFESSIONAL report using EXACTLY this JSON schema.
+
+{
   "activity_suggestions": [ { "activity": "...", "reason": "...", "vibe": "<cosy|adventurous|creative|relaxing|social>" } ],
   "connection_questions": [ { "question": "<a heartfelt, deep, open-ended question grounded in their real topics/memories that helps them grow closer>", "why": "<one short sentence on how it deepens their bond>" } ],
   "love_languages": { "person_a": { "name": "...", "primary": "...", "how_to_show_love": ["...", "..."] }, "person_b": { "name": "...", "primary": "...", "how_to_show_love": ["...", "..."] } },
   "sweet_messages": [ { "text": "<ready-to-send heartfelt message grounded in a real shared memory/theme>", "occasion": "<good morning|appreciation|miss you|apology|just because|encouragement>" } ],
-  "make_them_happy": { "person_a": { "name": "...", "tips": ["...", "..."] }, "person_b": { "name": "...", "tips": ["...", "..."] } },
-  "top_words": [ { "word": "<meaningful frequent word/phrase, skip trivial stop-words>", "count": <approx total occurrences> } (8-12 items, most to least frequent, aggregated across all chunks) ],
-  "most_positive": { "name": "<exact name of whoever brings more positivity>", "reason": "<2-3 warm sentences with evidence, without putting the other down>" },
-  "conversation_summary": "<ONE single warm sentence capturing the essence of the whole conversation>"
+  "make_them_happy": { "person_a": { "name": "...", "tips": ["...", "..."] }, "person_b": { "name": "...", "tips": ["...", "..."] } }
 }
 
 Use the chunk data as evidence. Do not repeat information — synthesise it into deep, specific insights.
