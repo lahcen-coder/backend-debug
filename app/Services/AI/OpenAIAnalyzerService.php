@@ -153,13 +153,21 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
         $body = [
             'model'           => $this->model,
             'temperature'     => 0.5,
-            'max_tokens'      => 16384,
             'response_format' => ['type' => 'json_object'],
             'messages'        => [
                 ['role' => 'system', 'content' => $systemPrompt],
                 ['role' => 'user',   'content' => $userPrompt],
             ],
         ];
+
+        // Only send max_tokens if explicitly configured. Otherwise let the model
+        // use its own native ceiling — hardcoding a value above what the deployed
+        // model supports makes OpenAI reject EVERY request with HTTP 400, which
+        // silently surfaced to the user as "Request failed with status code 500".
+        $maxTokens = config('services.openai.max_tokens');
+        if (! empty($maxTokens)) {
+            $body['max_tokens'] = (int) $maxTokens;
+        }
 
         $startedAt = microtime(true);
 

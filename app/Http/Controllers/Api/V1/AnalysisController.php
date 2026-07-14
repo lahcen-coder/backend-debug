@@ -274,6 +274,8 @@ class AnalysisController extends Controller
             'safety_flag'   => $analysis->safety_flag,
             'processed_at'  => $analysis->processed_at?->toIso8601String(),
             'created_at'    => $analysis->created_at->toIso8601String(),
+            // Surfaced so the owner can see WHY an analysis failed (diagnostics).
+            'failure_reason' => $analysis->status === 'failed' ? $analysis->failure_reason : null,
         ];
     }
 
