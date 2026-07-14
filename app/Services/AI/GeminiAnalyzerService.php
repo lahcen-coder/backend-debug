@@ -838,7 +838,7 @@ PROMPT;
                 '[%s] %s: %s',
                 $m['timestamp'] ?? '',
                 $m['sender']    ?? 'unknown',
-                mb_strtrim($m['text'] ?? '')
+                trim($m['text'] ?? '')
             ),
             $messages
         ));
