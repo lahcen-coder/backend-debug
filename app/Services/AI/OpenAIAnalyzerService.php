@@ -130,7 +130,7 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
         $body = [
             'model'           => $this->model,
             'temperature'     => 0.5,
-            'max_tokens'      => 4096,
+            'max_tokens'      => 8192,
             'response_format' => ['type' => 'json_object'],
             'messages'        => [
                 ['role' => 'system', 'content' => $systemPrompt],
