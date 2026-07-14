@@ -7,6 +7,7 @@ namespace App\Jobs;
 use App\Exceptions\RateLimitException;
 use App\Models\Analysis;
 use App\Services\AI\ConversationAnalyzer;
+use App\Services\AI\FallbackAnalyzerService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -117,8 +118,14 @@ class AnalyzeConversation implements ShouldQueue
         $this->analysis->markProcessing();
 
         try {
-            $provider = (string) config('services.ai.primary', 'gemini');
-            $report   = $analyzer->analyze($this->messages, $this->analysis->platform, $this->language);
+            $report = $analyzer->analyze($this->messages, $this->analysis->platform, $this->language);
+
+            // Record the provider that actually produced the report (the
+            // fallback analyzer may have switched away from the configured
+            // primary), falling back to the configured primary otherwise.
+            $provider = $analyzer instanceof FallbackAnalyzerService && $analyzer->usedProvider() !== ''
+                ? $analyzer->usedProvider()
+                : (string) config('services.ai.primary', 'gemini');
 
             $this->analysis->markCompleted($report, $provider);
 
