@@ -100,8 +100,12 @@ class Analysis extends Model
     public function markFailed(string $reason = ''): void
     {
         $this->update([
-            'status'         => 'failed',
-            'failure_reason' => $reason,
+            'status'             => 'failed',
+            'failure_reason'     => $reason,
+            // Free the dedup slot so the same conversation can be resubmitted.
+            // Otherwise the unique (user_id, clean_payload_hash) constraint
+            // would permanently block retries after a single failure.
+            'clean_payload_hash' => null,
         ]);
     }
 

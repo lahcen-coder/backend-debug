@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Jobs\AnalyzeConversation;
 use App\Models\Analysis;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -119,21 +120,50 @@ class AnalysisController extends Controller
         }
 
         // ── Persist + dispatch ────────────────────────────────────────────────
-        $analysis = DB::transaction(function () use ($user, $data, $messages, $payloadHash) {
-            $analysis = Analysis::create([
-                'user_id'            => $user->id,
-                'partner_name'       => Analysis::hashPartnerName($data['partner_name']),
-                'platform'           => $data['platform'],
-                'status'             => 'pending',
-                'clean_payload_hash' => $payloadHash,
-                'message_count'      => count($messages),
-            ]);
+        try {
+            $analysis = DB::transaction(function () use ($user, $data, $messages, $payloadHash) {
+                $analysis = Analysis::create([
+                    'user_id'            => $user->id,
+                    'partner_name'       => Analysis::hashPartnerName($data['partner_name']),
+                    'platform'           => $data['platform'],
+                    'status'             => 'pending',
+                    'clean_payload_hash' => $payloadHash,
+                    'message_count'      => count($messages),
+                ]);
 
-            // Increment usage counter atomically inside the transaction
-            $user->currentUsage()->increment('analyses_used');
+                // Increment usage counter atomically inside the transaction
+                $user->currentUsage()->increment('analyses_used');
 
-            return $analysis;
-        });
+                return $analysis;
+            });
+        } catch (QueryException $e) {
+            // Defense in depth against the (user_id, clean_payload_hash) unique
+            // constraint — e.g. a rapid duplicate double-submit race. Instead of
+            // bubbling up as a raw 500, return the existing matching row if we
+            // can find one, otherwise a clear, retryable error.
+            $existing = Analysis::where('user_id', $user->id)
+                ->where('clean_payload_hash', $payloadHash)
+                ->first();
+
+            if ($existing) {
+                return response()->json([
+                    'success' => true,
+                    'data'    => $this->formatAnalysis($existing),
+                    'message' => 'Duplicate submission — returning existing analysis.',
+                ], 200);
+            }
+
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'data'    => null,
+                'error'   => [
+                    'code'    => 'SUBMISSION_CONFLICT',
+                    'message' => 'This submission conflicted with another in-flight request. Please try again.',
+                ],
+            ], 409);
+        }
 
         // Dispatch to Redis/Horizon queue — messages are NOT stored in the DB.
         // They live in the queue payload only, and are discarded after processing.
