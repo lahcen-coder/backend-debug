@@ -6,6 +6,8 @@ namespace App\Services\AI;
 
 use App\Exceptions\AIProviderException;
 use App\Exceptions\RateLimitException;
+use Illuminate\Http\Client\Pool;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -25,6 +27,13 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
 
     /** Chunk size for map-reduce on long conversations. */
     private const CHUNK_SIZE = 500;
+
+    /**
+     * Max simultaneous in-flight requests when firing several independent AI
+     * calls (chunk map step). Keeps wall-clock time low for long conversations
+     * without opening an unbounded number of connections to OpenAI at once.
+     */
+    private const MAX_CONCURRENCY = 6;
 
     private string $apiKey;
     private string $model;
@@ -107,15 +116,13 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
      */
     private function runDirectAnalysis(array $messages, string $platform): array
     {
-        $core = $this->callOpenAI(
-            $this->buildSystemPrompt(),
-            $this->buildCoreAnalysisPrompt($messages, $platform)
-        );
-
-        $extended = $this->callOpenAI(
-            $this->buildSystemPrompt(),
-            $this->buildExtendedAnalysisPrompt($messages, $platform)
-        );
+        // Core and extended are independent of each other — firing them
+        // concurrently roughly halves the wall-clock time of this step
+        // compared to awaiting them one after another.
+        [$core, $extended] = $this->callOpenAIConcurrent([
+            ['system' => $this->buildSystemPrompt(), 'user' => $this->buildCoreAnalysisPrompt($messages, $platform)],
+            ['system' => $this->buildSystemPrompt(), 'user' => $this->buildExtendedAnalysisPrompt($messages, $platform)],
+        ]);
 
         return array_merge($core, $extended);
     }
@@ -124,24 +131,24 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
     {
         $chunks      = array_chunk($messages, self::CHUNK_SIZE);
         $totalChunks = count($chunks);
-        $chunkSums   = [];
 
+        // All chunk map calls are independent — run them concurrently (batched
+        // to respect MAX_CONCURRENCY) instead of one-by-one. For long
+        // conversations this is the difference between minutes and seconds,
+        // and avoids the job's own timeout killing an otherwise-healthy run.
+        $mapPrompts = [];
         foreach ($chunks as $index => $chunk) {
-            $chunkSums[] = $this->callOpenAI(
-                $this->buildSystemPrompt(),
-                $this->buildChunkMapPrompt($chunk, $index + 1, $totalChunks, $platform)
-            );
+            $mapPrompts[] = [
+                'system' => $this->buildSystemPrompt(),
+                'user'   => $this->buildChunkMapPrompt($chunk, $index + 1, $totalChunks, $platform),
+            ];
         }
+        $chunkSums = $this->callOpenAIConcurrent($mapPrompts);
 
-        $core = $this->callOpenAI(
-            $this->buildSystemPrompt(),
-            $this->buildCoreReducePrompt($chunkSums, count($messages))
-        );
-
-        $extended = $this->callOpenAI(
-            $this->buildSystemPrompt(),
-            $this->buildExtendedReducePrompt($chunkSums, count($messages))
-        );
+        [$core, $extended] = $this->callOpenAIConcurrent([
+            ['system' => $this->buildSystemPrompt(), 'user' => $this->buildCoreReducePrompt($chunkSums, count($messages))],
+            ['system' => $this->buildSystemPrompt(), 'user' => $this->buildExtendedReducePrompt($chunkSums, count($messages))],
+        ]);
 
         return array_merge($core, $extended);
     }
@@ -149,6 +156,55 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
     // ── OpenAI HTTP Client ────────────────────────────────────────────────────
 
     private function callOpenAI(string $systemPrompt, string $userPrompt): array
+    {
+        $startedAt = microtime(true);
+
+        $response = Http::timeout($this->requestTimeout)
+            ->withToken($this->apiKey)
+            ->post(self::API_URL, $this->buildRequestBody($systemPrompt, $userPrompt));
+
+        return $this->processResponse($response, (int) ((microtime(true) - $startedAt) * 1000));
+    }
+
+    /**
+     * Fire multiple independent prompts concurrently (batched to
+     * MAX_CONCURRENCY) and return their decoded JSON results in the same
+     * order as the input. Dramatically cuts wall-clock time for multi-call
+     * pipelines (core+extended, chunk map step) compared to awaiting each
+     * request sequentially.
+     *
+     * @param  array<int, array{system: string, user: string}> $prompts
+     * @return array<int, array>
+     */
+    private function callOpenAIConcurrent(array $prompts): array
+    {
+        $results = [];
+
+        foreach (array_chunk($prompts, self::MAX_CONCURRENCY, true) as $batch) {
+            $startedAt = microtime(true);
+
+            $responses = Http::pool(fn (Pool $pool) => array_map(
+                fn ($p) => $pool->timeout($this->requestTimeout)
+                    ->withToken($this->apiKey)
+                    ->post(self::API_URL, $this->buildRequestBody($p['system'], $p['user'])),
+                $batch
+            ));
+
+            $latencyMs = (int) ((microtime(true) - $startedAt) * 1000);
+
+            foreach ($batch as $key => $_prompt) {
+                $results[$key] = $this->processResponse($responses[$key], $latencyMs);
+            }
+        }
+
+        // array_chunk with preserve_keys keeps original indices — restore
+        // sequential order so callers can safely destructure the array.
+        ksort($results);
+
+        return array_values($results);
+    }
+
+    private function buildRequestBody(string $systemPrompt, string $userPrompt): array
     {
         $body = [
             'model'           => $this->model,
@@ -169,14 +225,15 @@ class OpenAIAnalyzerService implements ConversationAnalyzer
             $body['max_tokens'] = (int) $maxTokens;
         }
 
-        $startedAt = microtime(true);
+        return $body;
+    }
 
-        $response = Http::timeout($this->requestTimeout)
-            ->withToken($this->apiKey)
-            ->post(self::API_URL, $body);
-
-        $latencyMs = (int) ((microtime(true) - $startedAt) * 1000);
-
+    /**
+     * Shared response handling for both the single-call and pooled-concurrent
+     * paths: status/rate-limit checks, truncation detection, and JSON decode.
+     */
+    private function processResponse(Response $response, int $latencyMs): array
+    {
         if ($response->status() === 429) {
             $retryAfter = (int) ($response->header('Retry-After') ?: 60);
             throw new RateLimitException("OpenAI rate limit exceeded on model {$this->model}.", $retryAfter);

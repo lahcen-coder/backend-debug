@@ -7,6 +7,8 @@ namespace App\Services\AI;
 use App\Exceptions\AIProviderException;
 use App\Exceptions\RateLimitException;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Pool;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -48,6 +50,13 @@ class GeminiAnalyzerService implements ConversationAnalyzer
 
     /** When the corpus is larger, use map-reduce chunking. */
     private const CHUNK_SIZE = 600;
+
+    /**
+     * Max simultaneous in-flight requests when firing several independent AI
+     * calls (chunk map step). Keeps wall-clock time low for long conversations
+     * without opening an unbounded number of connections to Gemini at once.
+     */
+    private const MAX_CONCURRENCY = 6;
 
     /** Gemini 1.5 Flash pricing per 1M tokens (for cost tracking logs). */
     private const FLASH_COST_IN_PER_M  = 0.075;
@@ -159,17 +168,13 @@ class GeminiAnalyzerService implements ConversationAnalyzer
      */
     private function runDirectAnalysis(array $messages, string $platform): array
     {
-        $core = $this->callGemini(
-            $this->analysisModel,
-            $this->buildSystemPrompt(),
-            $this->buildCoreAnalysisPrompt($messages, $platform)
-        );
-
-        $extended = $this->callGemini(
-            $this->analysisModel,
-            $this->buildSystemPrompt(),
-            $this->buildExtendedAnalysisPrompt($messages, $platform)
-        );
+        // Core and extended are independent of each other — firing them
+        // concurrently roughly halves the wall-clock time of this step
+        // compared to awaiting them one after another.
+        [$core, $extended] = $this->callGeminiConcurrent([
+            ['model' => $this->analysisModel, 'system' => $this->buildSystemPrompt(), 'user' => $this->buildCoreAnalysisPrompt($messages, $platform)],
+            ['model' => $this->analysisModel, 'system' => $this->buildSystemPrompt(), 'user' => $this->buildExtendedAnalysisPrompt($messages, $platform)],
+        ]);
 
         return array_merge($core, $extended);
     }
@@ -180,27 +185,25 @@ class GeminiAnalyzerService implements ConversationAnalyzer
     {
         $chunks      = array_chunk($messages, self::CHUNK_SIZE);
         $totalChunks = count($chunks);
-        $chunkSums   = [];
 
+        // All chunk map calls are independent — run them concurrently (batched
+        // to respect MAX_CONCURRENCY) instead of one-by-one. For long
+        // conversations this is the difference between minutes and seconds,
+        // and avoids the job's own timeout killing an otherwise-healthy run.
+        $mapRequests = [];
         foreach ($chunks as $index => $chunk) {
-            $chunkSums[] = $this->callGemini(
-                $this->analysisModel,
-                $this->buildSystemPrompt(),
-                $this->buildChunkMapPrompt($chunk, $index + 1, $totalChunks, $platform)
-            );
+            $mapRequests[] = [
+                'model'  => $this->analysisModel,
+                'system' => $this->buildSystemPrompt(),
+                'user'   => $this->buildChunkMapPrompt($chunk, $index + 1, $totalChunks, $platform),
+            ];
         }
+        $chunkSums = $this->callGeminiConcurrent($mapRequests);
 
-        $core = $this->callGemini(
-            $this->analysisModel,
-            $this->buildSystemPrompt(),
-            $this->buildCoreReducePrompt($chunkSums, count($messages))
-        );
-
-        $extended = $this->callGemini(
-            $this->analysisModel,
-            $this->buildSystemPrompt(),
-            $this->buildExtendedReducePrompt($chunkSums, count($messages))
-        );
+        [$core, $extended] = $this->callGeminiConcurrent([
+            ['model' => $this->analysisModel, 'system' => $this->buildSystemPrompt(), 'user' => $this->buildCoreReducePrompt($chunkSums, count($messages))],
+            ['model' => $this->analysisModel, 'system' => $this->buildSystemPrompt(), 'user' => $this->buildExtendedReducePrompt($chunkSums, count($messages))],
+        ]);
 
         return array_merge($core, $extended);
     }
@@ -216,8 +219,56 @@ class GeminiAnalyzerService implements ConversationAnalyzer
      */
     private function callGemini(string $model, string $systemPrompt, string $userPrompt): array
     {
-        $url  = self::API_BASE_URL . "/{$model}:generateContent";
-        $body = [
+        $startedAt = microtime(true);
+
+        $response = Http::timeout($this->requestTimeout)
+            ->withQueryParameters(['key' => $this->apiKey])
+            ->post(self::API_BASE_URL . "/{$model}:generateContent", $this->buildRequestBody($systemPrompt, $userPrompt));
+
+        return $this->processResponse($response, $model, (int) ((microtime(true) - $startedAt) * 1000));
+    }
+
+    /**
+     * Fire multiple independent Gemini requests concurrently (batched to
+     * MAX_CONCURRENCY) and return their decoded JSON results in the same
+     * order as the input. Dramatically cuts wall-clock time for multi-call
+     * pipelines (core+extended, chunk map step) compared to awaiting each
+     * request sequentially.
+     *
+     * @param  array<int, array{model: string, system: string, user: string}> $requests
+     * @return array<int, array>
+     */
+    private function callGeminiConcurrent(array $requests): array
+    {
+        $results = [];
+
+        foreach (array_chunk($requests, self::MAX_CONCURRENCY, true) as $batch) {
+            $startedAt = microtime(true);
+
+            $responses = Http::pool(fn (Pool $pool) => array_map(
+                fn ($r) => $pool->timeout($this->requestTimeout)
+                    ->withQueryParameters(['key' => $this->apiKey])
+                    ->post(self::API_BASE_URL . "/{$r['model']}:generateContent", $this->buildRequestBody($r['system'], $r['user'])),
+                $batch
+            ));
+
+            $latencyMs = (int) ((microtime(true) - $startedAt) * 1000);
+
+            foreach ($batch as $key => $req) {
+                $results[$key] = $this->processResponse($responses[$key], $req['model'], $latencyMs);
+            }
+        }
+
+        // array_chunk with preserve_keys keeps original indices — restore
+        // sequential order so callers can safely destructure the array.
+        ksort($results);
+
+        return array_values($results);
+    }
+
+    private function buildRequestBody(string $systemPrompt, string $userPrompt): array
+    {
+        return [
             'system_instruction' => [
                 'parts' => [['text' => $systemPrompt]],
             ],
@@ -238,15 +289,14 @@ class GeminiAnalyzerService implements ConversationAnalyzer
                 ['category' => 'HARM_CATEGORY_DANGEROUS_CONTENT',  'threshold' => 'BLOCK_ONLY_HIGH'],
             ],
         ];
+    }
 
-        $startedAt = microtime(true);
-
-        $response = Http::timeout($this->requestTimeout)
-            ->withQueryParameters(['key' => $this->apiKey])
-            ->post($url, $body);
-
-        $latencyMs = (int) ((microtime(true) - $startedAt) * 1000);
-
+    /**
+     * Shared response handling for both the single-call and pooled-concurrent
+     * paths: rate-limit/error checks, safety/truncation detection, and JSON decode.
+     */
+    private function processResponse(Response $response, string $model, int $latencyMs): array
+    {
         // ── Handle rate limit ─────────────────────────────────────────────────
         if ($response->status() === 429) {
             $retryAfter = (int) ($response->header('Retry-After') ?: 60);
