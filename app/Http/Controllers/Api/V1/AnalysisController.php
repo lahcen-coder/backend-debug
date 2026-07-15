@@ -98,37 +98,23 @@ class AnalysisController extends Controller
         $messages    = array_slice($data['messages'], 0, $maxMessages);
         $language    = $data['language'] ?? 'english';
 
-        // ── Deduplication via content hash ────────────────────────────────────
-        // Build a stable, sorted hash of the cleaned message corpus so the same
-        // conversation cannot be submitted twice within the cooldown window.
-        // The language is part of the hash so requesting a DIFFERENT language for
-        // the same conversation produces a fresh analysis (not the cached one).
-        $payloadHash = $this->computePayloadHash($messages, $language);
-
-        $existing = Analysis::where('user_id', $user->id)
-            ->where('clean_payload_hash', $payloadHash)
-            ->where('created_at', '>=', now()->subHours(24))
-            ->whereIn('status', ['pending', 'processing', 'completed'])
-            ->first();
-
-        if ($existing) {
-            return response()->json([
-                'success' => true,
-                'data'    => $this->formatAnalysis($existing),
-                'message' => 'Duplicate submission — returning existing analysis.',
-            ], 200);
-        }
+        // NOTE: There is intentionally NO deduplication here — every submission
+        // (even for the exact same conversation) always creates a fresh Analysis
+        // and runs a brand-new AI pass. A previous version cached identical
+        // submissions and reused the old report, which users found surprising
+        // and which also caused a resurfaced HTTP 500 once a submission had ever
+        // failed (see clean_payload_hash uniqueness fix).
 
         // ── Persist + dispatch ────────────────────────────────────────────────
         try {
-            $analysis = DB::transaction(function () use ($user, $data, $messages, $payloadHash) {
+            $analysis = DB::transaction(function () use ($user, $data, $messages, $language) {
                 $analysis = Analysis::create([
-                    'user_id'            => $user->id,
-                    'partner_name'       => Analysis::hashPartnerName($data['partner_name']),
-                    'platform'           => $data['platform'],
-                    'status'             => 'pending',
-                    'clean_payload_hash' => $payloadHash,
-                    'message_count'      => count($messages),
+                    'user_id'       => $user->id,
+                    'partner_name'  => Analysis::hashPartnerName($data['partner_name']),
+                    'platform'      => $data['platform'],
+                    'status'        => 'pending',
+                    'language'      => $language,
+                    'message_count' => count($messages),
                 ]);
 
                 // Increment usage counter atomically inside the transaction
@@ -137,22 +123,8 @@ class AnalysisController extends Controller
                 return $analysis;
             });
         } catch (QueryException $e) {
-            // Defense in depth against the (user_id, clean_payload_hash) unique
-            // constraint — e.g. a rapid duplicate double-submit race. Instead of
-            // bubbling up as a raw 500, return the existing matching row if we
-            // can find one, otherwise a clear, retryable error.
-            $existing = Analysis::where('user_id', $user->id)
-                ->where('clean_payload_hash', $payloadHash)
-                ->first();
-
-            if ($existing) {
-                return response()->json([
-                    'success' => true,
-                    'data'    => $this->formatAnalysis($existing),
-                    'message' => 'Duplicate submission — returning existing analysis.',
-                ], 200);
-            }
-
+            // Defense in depth against any unexpected DB constraint violation.
+            // Return a clean, retryable error instead of a raw 500.
             report($e);
 
             return response()->json([
@@ -273,24 +245,6 @@ class AnalysisController extends Controller
     // ── Private Helpers ───────────────────────────────────────────────────────
 
     /**
-     * Compute a stable SHA-256 hash of the message corpus for deduplication.
-     *
-     * Messages are sorted by timestamp before hashing so that order differences
-     * in the same corpus produce the same hash.
-     */
-    private function computePayloadHash(array $messages, string $language = 'english'): string
-    {
-        usort($messages, fn ($a, $b) => strcmp((string) ($a['timestamp'] ?? ''), (string) ($b['timestamp'] ?? '')));
-
-        $normalized = array_map(
-            fn ($m) => mb_strtolower(trim($m['sender'])) . '|' . mb_strtolower(trim($m['text'])),
-            $messages
-        );
-
-        return hash('sha256', $language . "\n" . implode("\n", $normalized));
-    }
-
-    /**
      * Build the public-facing analysis payload (without report_data by default).
      */
     private function formatAnalysis(Analysis $analysis): array
@@ -299,6 +253,7 @@ class AnalysisController extends Controller
             'id'            => $analysis->id,
             'platform'      => $analysis->platform,
             'status'        => $analysis->status,
+            'language'      => $analysis->language,
             'message_count' => $analysis->message_count,
             'ai_provider'   => $analysis->ai_provider,
             'safety_flag'   => $analysis->safety_flag,

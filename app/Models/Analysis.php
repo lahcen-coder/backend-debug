@@ -13,7 +13,8 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property string|null $partner_name       SHA-256 hash of contact label (privacy-safe)
  * @property string      $platform           instagram | whatsapp
  * @property string      $status             pending | processing | completed | failed
- * @property string|null $clean_payload_hash SHA-256 of normalised payload for dedup
+ * @property string|null $clean_payload_hash SHA-256 of normalised payload (kept for analytics only, not unique)
+ * @property string      $language           english | spanish | darija
  * @property string|null $ai_provider        gemini | openai
  * @property array|null  $report_data        Structured AI report (chemistry_score, insights, etc.)
  * @property int         $message_count
@@ -28,6 +29,7 @@ class Analysis extends Model
         'partner_name',
         'platform',
         'status',
+        'language',
         'clean_payload_hash',
         'ai_provider',
         'report_data',
@@ -100,12 +102,8 @@ class Analysis extends Model
     public function markFailed(string $reason = ''): void
     {
         $this->update([
-            'status'             => 'failed',
-            'failure_reason'     => $reason,
-            // Free the dedup slot so the same conversation can be resubmitted.
-            // Otherwise the unique (user_id, clean_payload_hash) constraint
-            // would permanently block retries after a single failure.
-            'clean_payload_hash' => null,
+            'status'         => 'failed',
+            'failure_reason' => $reason,
         ]);
     }
 
